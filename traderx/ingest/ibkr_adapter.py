@@ -13,7 +13,16 @@ from typing import Iterable, List
 
 import pandas as pd
 from ib_insync import IB, Stock
-from ib_insync.util import IBError, NotConnectedError
+
+try:  # pragma: no cover - import location differs across ib_insync versions
+    from ib_insync.util import IBError  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover - fallback for newer versions
+    from ib_insync.ib import IBError  # type: ignore[attr-defined]
+
+try:  # pragma: no cover - import location differs across ib_insync versions
+    from ib_insync.util import NotConnectedError  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover - fallback for newer versions
+    from ib_insync.ib import NotConnectedError  # type: ignore[attr-defined]
 
 from traderx.utils.config import load_config
 
@@ -288,8 +297,9 @@ class IBKRAdapter:
             raise IBKRAdapterError("IBKR session disconnected", request=req, retryable=True) from exc
         except IBError as exc:
             message = self._format_error_message(exc, req)
-            retryable = exc.errorCode in _RETRYABLE_ERROR_CODES
-            raise IBKRAdapterError(message, code=exc.errorCode, request=req, retryable=retryable) from exc
+            code = getattr(exc, "errorCode", None)
+            retryable = code in _RETRYABLE_ERROR_CODES if code is not None else False
+            raise IBKRAdapterError(message, code=code, request=req, retryable=retryable) from exc
         except Exception as exc:  # pragma: no cover - defensive
             raise IBKRAdapterError(str(exc), request=req, retryable=False) from exc
 
@@ -331,14 +341,16 @@ class IBKRAdapter:
         return frame
 
     def _format_error_message(self, error: IBError, req: HistoricalDataRequest) -> str:
-        prefix = f"IBKR error {error.errorCode} while fetching {req.symbol}"
-        if error.errorCode in _RETRYABLE_ERROR_CODES:
-            return f"{prefix}: pacing/data farm violation ({error.errorMsg})"
-        if error.errorCode in _CONTRACT_ERROR_CODES:
-            return f"{prefix}: contract not found ({error.errorMsg})"
-        if error.errorCode == 354:
-            return f"{prefix}: no data returned ({error.errorMsg})"
-        return f"{prefix}: {error.errorMsg}"
+        code = getattr(error, "errorCode", "unknown")
+        message = getattr(error, "errorMsg", str(error))
+        prefix = f"IBKR error {code} while fetching {req.symbol}"
+        if code in _RETRYABLE_ERROR_CODES:
+            return f"{prefix}: pacing/data farm violation ({message})"
+        if code in _CONTRACT_ERROR_CODES:
+            return f"{prefix}: contract not found ({message})"
+        if code == 354:
+            return f"{prefix}: no data returned ({message})"
+        return f"{prefix}: {message}"
 
     def _log_request(
         self,
