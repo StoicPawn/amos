@@ -13,6 +13,7 @@ import pandas as pd
 from lightgbm import LGBMClassifier, LGBMRegressor
 from sklearn.base import ClassifierMixin
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.preprocessing import StandardScaler
 
 from traderx.backtest.cv import PurgedKFold
 from traderx.backtest.metrics import (
@@ -234,6 +235,23 @@ class WalkForwardRunner:
         X_test = self.features.loc[window.test_index]
         test_labels = self.labels.loc[window.test_index]
 
+        scaler = StandardScaler()
+        if not X_train.empty:
+            scaler.fit(X_train)
+            X_train = self._array_to_frame(
+                scaler.transform(X_train), X_train.index, X_train.columns
+            )
+            if not X_calib.empty:
+                X_calib = self._array_to_frame(
+                    scaler.transform(X_calib), X_calib.index, X_calib.columns
+                )
+            if not X_test.empty:
+                X_test = self._array_to_frame(
+                    scaler.transform(X_test), X_test.index, X_test.columns
+                )
+
+        joblib.dump(scaler, window_dir / "scaler.joblib")
+
         classifier, calibration_method = self._fit_classifier(X_train, y_train, X_calib, y_calib)
         regressor = self._fit_regressor(X_train, reg_target)
 
@@ -249,6 +267,7 @@ class WalkForwardRunner:
             "test_start": window.test_index.min(),
             "test_end": window.test_index.max(),
             "calibration_method": calibration_method,
+            "features": list(self.features.columns),
         }
         with AtomicWriter(window_dir / "metadata.json") as fh:
             json.dump(metadata, fh, default=str)
@@ -496,6 +515,26 @@ class WalkForwardRunner:
         regressor = LGBMRegressor(**self._regressor_params)
         regressor.fit(X_train, y_values)
         return regressor
+
+    @staticmethod
+    def _array_to_frame(array: object, index: pd.Index, columns: Sequence[str]) -> pd.DataFrame:
+        if hasattr(array, "to_list"):
+            rows = array.to_list()
+        elif hasattr(array, "tolist"):
+            rows = array.tolist()
+        else:
+            rows = list(array)
+        data = {col: [] for col in columns}
+        if not rows:
+            return pd.DataFrame(data, index=index)
+        for row in rows:
+            if isinstance(row, (list, tuple)):
+                iterable = row
+            else:
+                iterable = [row]
+            for idx, col in enumerate(columns):
+                data[col].append(iterable[idx])
+        return pd.DataFrame(data, index=index)
 
     @staticmethod
     def _resolve_feature_list(model_cfg: Mapping[str, object]) -> List[str]:

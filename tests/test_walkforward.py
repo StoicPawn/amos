@@ -45,6 +45,7 @@ def test_walkforward_runner_generates_artifacts(tmp_path: Path) -> None:
     for window_dir in run_dir.glob("window_*/"):
         assert (window_dir / "classifier.joblib").exists()
         assert (window_dir / "regressor.joblib").exists()
+        assert (window_dir / "scaler.joblib").exists()
         assert (window_dir / "metadata.json").exists()
 
     assert (run_dir / "walkforward_config.json").exists()
