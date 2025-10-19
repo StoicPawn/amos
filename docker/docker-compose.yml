@@ -1,0 +1,17 @@
+version: "3.9"
+services:
+  ibkr-gateway:
+    image: ghcr.io/ibkr/ibgateway:latest
+    environment:
+      TWS_USERID: ""
+      TWS_PASSWORD: ""
+    ports:
+      - "127.0.0.1:4002:4002"
+    restart: unless-stopped
+  traderx-runner:
+    build: ..
+    command: ["python", "-m", "traderx_ibkr.live_runner", "--targets", "data/targets/targets.csv"]
+    volumes:
+      - ..:/app
+    depends_on:
+      - ibkr-gateway

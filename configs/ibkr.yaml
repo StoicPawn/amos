@@ -1,0 +1,8 @@
+connection:
+  host: 127.0.0.1
+  port: 7497
+  clientId: 42
+  connectTimeout: 10
+accounting:
+  base_currency: USD
+  timezone: Europe/Rome

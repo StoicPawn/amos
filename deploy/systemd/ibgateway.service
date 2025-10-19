@@ -1,0 +1,12 @@
+[Unit]
+Description=IB Gateway
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ibgateway
+ExecStart=/opt/ibgateway/start.sh
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

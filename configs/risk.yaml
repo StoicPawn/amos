@@ -1,0 +1,10 @@
+risk:
+  target_vol_ann: 0.5
+  kelly_fraction: 0.25
+  max_symbol_weight: 0.10
+  max_gross_exposure: 1.0
+  max_net_exposure: 0.5
+  stop_atr_mult: 2.0
+  time_stop_bars: 20
+  dd_kill_switch_daily: 0.08
+  dd_kill_switch_total: 0.25
