@@ -19,6 +19,7 @@ dependencies = [
     "tqdm>=4.65",
     "scipy>=1.8",
     "ibapi>=10.20",
+    "ib-insync>=0.9.86",
 ]
 
 [project.optional-dependencies]
