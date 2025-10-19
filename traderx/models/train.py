@@ -9,7 +9,7 @@ import pandas as pd
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 
 from traderx.features.pipelines import FeaturePipeline
-from traderx.labeling.triple_barrier import apply_triple_barrier
+from traderx.labeling.triple_barrier import apply_triple_barrier, results_to_frame
 from traderx.utils.config import load_config
 from traderx.utils.io import atomic_to_csv
 
@@ -41,14 +41,18 @@ def main() -> None:
             "low": 99 + pd.Series(range(100), index=idx),
         })
 
-    features = FeaturePipeline(prices).compute().fillna(method="bfill")
+    features = FeaturePipeline(prices).compute()
+    features.index = prices.index
+    features = features.bfill()
     labels_cfg = model_cfg.get("labels", {})
-    labels = apply_triple_barrier(
+    label_results = apply_triple_barrier(
         prices["close"],
         pt_mult=labels_cfg.get("pt_mult", 1.5),
         sl_mult=labels_cfg.get("sl_mult", 1.0),
         max_h=labels_cfg.get("max_h", 20),
     )
+    labels = results_to_frame(label_results, index=prices.index)
+    labels = labels.reindex(features.index).ffill().bfill().fillna(0.0)
     y = labels["label"].values
 
     clf = GradientBoostingClassifier()

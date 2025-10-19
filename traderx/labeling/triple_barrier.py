@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, List, Sequence
 
+import pandas as pd
+
 
 @dataclass
 class TripleBarrierResult:
@@ -48,3 +50,23 @@ def apply_triple_barrier(
         ret = prices[exit_idx] / price - 1 if price else 0.0
         results.append(TripleBarrierResult(label, exit_idx, ret))
     return results
+
+
+def results_to_frame(
+    results: Sequence[TripleBarrierResult],
+    index: Sequence[object] | None = None,
+) -> pd.DataFrame:
+    """Convert a sequence of :class:`TripleBarrierResult` to a DataFrame."""
+
+    if index is None:
+        idx = range(len(results))
+    else:
+        idx = list(index)
+        if len(idx) != len(results):
+            raise ValueError("Index length does not match number of results")
+    data = {
+        "label": [res.label for res in results],
+        "t_exit": [res.t_exit for res in results],
+        "ret": [res.ret for res in results],
+    }
+    return pd.DataFrame(data, index=idx)

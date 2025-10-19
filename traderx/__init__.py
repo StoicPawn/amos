@@ -7,5 +7,6 @@ __all__ = [
     "backtest",
     "exec",
     "utils",
+    "pipeline",
 ]
 __version__ = "0.1.0"
