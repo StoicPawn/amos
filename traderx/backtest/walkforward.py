@@ -55,12 +55,23 @@ def main() -> None:
     prices = _load_prices(args.prices)
     runner = WalkForwardRunner(prices, config, model_cfg, Path(args.out))
     result = runner.run()
+    print(f"Artifacts stored in {result.run_dir}")
     if result.report_csv:
         print(f"Walk-forward report saved to {result.report_csv}")
     if result.summary_json:
         print(f"Summary saved to {result.summary_json}")
     if result.targets_csv:
         print(f"Targets saved to {result.targets_csv}")
+    if result.active_model_dir:
+        selection = result.summary.get("selection_metric", {})
+        metric_name = selection.get("metric")
+        metric_value = selection.get("value")
+        window_id = selection.get("window_id")
+        print(
+            "Active model:"
+            f" window={window_id}, metric={metric_name}, value={metric_value},"
+            f" path={result.active_model_dir}"
+        )
 
 
 if __name__ == "__main__":

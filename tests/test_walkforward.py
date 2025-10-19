@@ -32,7 +32,9 @@ def test_walkforward_runner_generates_artifacts(tmp_path: Path) -> None:
     result = runner.run()
 
     assert not result.metrics.empty
-    assert any(path.name.startswith("window_") for path in tmp_path.iterdir())
+    run_dir = result.run_dir
+    assert run_dir.exists()
+    assert any(path.name.startswith("window_") for path in run_dir.iterdir())
     assert result.summary_json and result.summary_json.exists()
     assert result.report_csv and result.report_csv.exists()
     if result.report_parquet:
@@ -40,10 +42,18 @@ def test_walkforward_runner_generates_artifacts(tmp_path: Path) -> None:
     if result.targets_csv:
         assert result.targets_csv.exists()
 
-    for window_dir in tmp_path.glob("window_*/"):
+    for window_dir in run_dir.glob("window_*/"):
         assert (window_dir / "classifier.joblib").exists()
         assert (window_dir / "regressor.joblib").exists()
         assert (window_dir / "metadata.json").exists()
+
+    assert (run_dir / "walkforward_config.json").exists()
+    assert (run_dir / "model_config.json").exists()
+
+    if result.active_model_dir:
+        assert (result.active_model_dir / "classifier.joblib").exists()
+        assert (result.active_model_dir / "regressor.joblib").exists()
+        assert "selection_metric" in result.summary
 
     summary_metrics = result.summary.get("metrics", {})
     for key in config.metrics:
