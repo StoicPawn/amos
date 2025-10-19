@@ -1,0 +1,7 @@
+execution:
+  default_mode: vwap
+  time_in_force: DAY
+  limit_offset_bps: 2.0
+  algo:
+    vwap: {maxPctVol: 0.10}
+    twap: {strategyType: "Balance"}

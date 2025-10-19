@@ -1,0 +1,5 @@
+universe:
+  asset_class: equities
+  symbols: [AAPL, MSFT, NVDA]
+  min_avg_dollar_vol: 5e6
+  timezone: America/New_York

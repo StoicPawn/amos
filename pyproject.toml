@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "traderx"
+version = "0.1.0"
+description = "TraderX swing/day trading research and execution toolkit"
+authors = [{name = "TraderX"}]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.21",
+    "pandas>=1.4",
+    "scikit-learn>=1.1",
+    "joblib>=1.2",
+    "pyyaml>=6.0",
+    "lightgbm>=4.0",
+    "tqdm>=4.65",
+    "scipy>=1.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "black>=23.0",
+    "ruff>=0.1.6",
+]
+
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "B", "I", "UP", "W"]
+ignore = ["B905"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"

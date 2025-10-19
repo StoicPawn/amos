@@ -1,0 +1,12 @@
+[Unit]
+Description=TraderX Live Runner
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/traderx
+ExecStart=/usr/bin/python -m traderx_ibkr.live_runner --targets /opt/traderx/data/targets/targets.csv
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

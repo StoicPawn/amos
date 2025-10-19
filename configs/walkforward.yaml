@@ -1,0 +1,6 @@
+walkforward:
+  retrain_freq_days: 20
+  test_window_days: 20
+  embargo_bars: 10
+  kfold: 5
+  metrics: [Sharpe, Sortino, MaxDD, ES95, Turnover, PSR]
