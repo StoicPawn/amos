@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Generator, Iterable, List, Sequence, Tuple
-
-import pandas as pd
 
 
 @dataclass
@@ -58,9 +56,23 @@ class PurgedKFold:
             current = stop
 
 
-def _as_timestamp(value: object) -> pd.Timestamp:
-    """Return ``value`` as :class:`pandas.Timestamp` for comparisons."""
+def _as_timestamp(value: object) -> datetime:
+    """Return ``value`` as a timezone aware :class:`datetime`."""
 
-    if isinstance(value, pd.Timestamp):
-        return value
-    return pd.Timestamp(value)
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError as exc:  # pragma: no cover - defensive
+            raise TypeError(f"Cannot interpret {value!r} as a timestamp") from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        else:
+            parsed = parsed.astimezone(timezone.utc)
+        return parsed
+    raise TypeError(f"Unsupported timestamp value: {value!r}")

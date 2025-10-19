@@ -1,2 +1,2 @@
 """Ingestion modules."""
-__all__ = ["ibkr_adapter", "vendor_cache"]
+__all__ = ["ibkr_adapter", "vendor_cache", "spot"]
