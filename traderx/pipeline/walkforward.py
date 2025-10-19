@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Sequence
@@ -98,6 +99,8 @@ class WalkForwardRunResult:
     report_parquet: Path | None
     summary_json: Path | None
     targets_csv: Path | None
+    run_dir: Path
+    active_model_dir: Path | None
 
 
 @dataclass
@@ -151,6 +154,7 @@ class WalkForwardRunner:
         self.model_cfg = model_cfg
         self.artifact_root = Path(artifact_root)
         self.artifact_root.mkdir(parents=True, exist_ok=True)
+        self.run_dir = self._create_run_directory()
 
         self._feature_names = self._resolve_feature_list(model_cfg)
         self._classifier_params = dict(model_cfg.get("lgbm", {}))
@@ -167,10 +171,12 @@ class WalkForwardRunner:
 
     # ------------------------------------------------------------------
     def run(self) -> WalkForwardRunResult:
+        self._materialize_run_configs()
         metrics_rows: List[Dict[str, object]] = []
         prediction_frames: List[pd.DataFrame] = []
         calibration_choices: List[str] = []
         last_window_id: int | None = None
+        artifact_lookup: Dict[int, Path] = {}
 
         for window in self.windows:
             window_result = self._run_window(window)
@@ -179,6 +185,7 @@ class WalkForwardRunner:
             if window_result.calibration_method:
                 calibration_choices.append(window_result.calibration_method)
             last_window_id = window.window_id
+            artifact_lookup[window.window_id] = window_result.artifact_dir
 
         metrics_df = pd.DataFrame(metrics_rows)
         predictions_df = (
@@ -188,6 +195,14 @@ class WalkForwardRunner:
         )
 
         summary = self._build_summary(metrics_df, calibration_choices)
+        active_model_dir, selection_info = self._select_active_model(metrics_df, artifact_lookup)
+        if selection_info:
+            summary["selection_metric"] = selection_info
+        if active_model_dir is not None:
+            summary["active_model"] = {
+                "path": str(active_model_dir),
+                "window_id": selection_info.get("window_id") if selection_info else None,
+            }
         report_csv, report_parquet = self._write_report(metrics_df)
         summary_json = self._write_summary(summary)
         targets_csv = self._write_targets(predictions_df, last_window_id)
@@ -200,11 +215,13 @@ class WalkForwardRunner:
             report_parquet=report_parquet,
             summary_json=summary_json,
             targets_csv=targets_csv,
+            run_dir=self.run_dir,
+            active_model_dir=active_model_dir,
         )
 
     # ------------------------------------------------------------------
     def _run_window(self, window: WalkForwardWindow) -> _WindowRunResult:
-        window_dir = self.artifact_root / f"window_{window.window_id:03d}"
+        window_dir = self.run_dir / f"window_{window.window_id:03d}"
         window_dir.mkdir(parents=True, exist_ok=True)
 
         X_train = self.features.loc[window.train_index]
@@ -287,6 +304,7 @@ class WalkForwardRunner:
         summary: Dict[str, object] = {
             "config": self.config.to_dict(),
             "windows": len(self.windows),
+            "run_dir": str(self.run_dir),
         }
         if not metrics_df.empty:
             metrics_df = metrics_df.copy()
@@ -313,8 +331,8 @@ class WalkForwardRunner:
         self,
         metrics_df: pd.DataFrame,
     ) -> tuple[Path | None, Path | None]:
-        report_csv = self.artifact_root / "report.csv"
-        report_parquet = self.artifact_root / "report.parquet"
+        report_csv = self.run_dir / "report.csv"
+        report_parquet = self.run_dir / "report.parquet"
 
         if not metrics_df.empty:
             with AtomicWriter(report_csv) as fh:
@@ -329,7 +347,7 @@ class WalkForwardRunner:
         return report_csv, report_parquet
 
     def _write_summary(self, summary: Dict[str, object]) -> Path | None:
-        summary_path = self.artifact_root / "summary.json"
+        summary_path = self.run_dir / "summary.json"
         with AtomicWriter(summary_path) as fh:
             json.dump(summary, fh, default=str, indent=2)
         return summary_path
@@ -344,7 +362,7 @@ class WalkForwardRunner:
         latest = predictions_df[predictions_df["window_id"] == last_window_id]
         if latest.empty:
             return None
-        targets_path = self.artifact_root / "targets.csv"
+        targets_path = self.run_dir / "targets.csv"
         with AtomicWriter(targets_path) as fh:
             latest.to_csv(fh, index=False)
         return targets_path
@@ -487,3 +505,101 @@ class WalkForwardRunner:
         else:
             feature_list = []
         return list(feature_list)
+
+    # ------------------------------------------------------------------
+    def _create_run_directory(self) -> Path:
+        existing = [
+            path
+            for path in self.artifact_root.iterdir()
+            if path.is_dir() and path.name.startswith("run_")
+        ]
+        next_idx = 0
+        if existing:
+            indices = []
+            for path in existing:
+                try:
+                    indices.append(int(path.name.split("_")[1]))
+                except (IndexError, ValueError):
+                    continue
+            if indices:
+                next_idx = max(indices) + 1
+        run_dir = self.artifact_root / f"run_{next_idx:04d}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return run_dir
+
+    def _materialize_run_configs(self) -> None:
+        config_path = self.run_dir / "walkforward_config.json"
+        model_path = self.run_dir / "model_config.json"
+        with AtomicWriter(config_path) as fh:
+            json.dump(self.config.to_dict(), fh, indent=2)
+        with AtomicWriter(model_path) as fh:
+            json.dump(self._sanitize_model_config(self.model_cfg), fh, indent=2, default=str)
+
+    def _sanitize_model_config(self, config: Mapping[str, object]) -> Dict[str, object]:
+        serializable: Dict[str, object] = {}
+        for key, value in config.items():
+            if isinstance(value, Mapping):
+                serializable[key] = self._sanitize_model_config(value)
+            elif isinstance(value, (list, tuple)):
+                serializable[key] = [self._convert_scalar(v) for v in value]
+            else:
+                serializable[key] = self._convert_scalar(value)
+        return serializable
+
+    @staticmethod
+    def _convert_scalar(value: object) -> object:
+        if isinstance(value, (np.generic,)):
+            return value.item()
+        return value
+
+    def _select_active_model(
+        self,
+        metrics_df: pd.DataFrame,
+        artifact_lookup: Mapping[int, Path],
+    ) -> tuple[Path | None, Dict[str, object]]:
+        if metrics_df.empty:
+            return None, {}
+        selection_metric = self._resolve_selection_metric(metrics_df)
+        if selection_metric is None:
+            return None, {}
+        metric_name, column, higher_is_better = selection_metric
+        metrics_df = metrics_df.dropna(subset=[column])
+        if metrics_df.empty:
+            return None, {}
+        sorted_df = metrics_df.sort_values(column, ascending=not higher_is_better)
+        best_row = sorted_df.iloc[0]
+        window_id = int(best_row["window_id"])
+        summary_entry = {
+            "metric": metric_name,
+            "value": float(best_row[column]),
+            "window_id": window_id,
+            "direction": "max" if higher_is_better else "min",
+        }
+        artifact_dir = artifact_lookup.get(window_id)
+        if artifact_dir is None:
+            return None, summary_entry
+        active_dir = self.run_dir / "active"
+        active_dir.mkdir(exist_ok=True)
+        for artifact_name in ("classifier.joblib", "regressor.joblib", "metadata.json"):
+            source = artifact_dir / artifact_name
+            if source.exists():
+                shutil.copy2(source, active_dir / artifact_name)
+        if (artifact_dir / "metadata.json").exists():
+            with AtomicWriter(active_dir / "selection.json") as fh:
+                json.dump(dict(summary_entry), fh, indent=2)
+        return active_dir, summary_entry
+
+    def _resolve_selection_metric(
+        self,
+        metrics_df: pd.DataFrame,
+    ) -> tuple[str, str, bool] | None:
+        for metric_name in self.config.metrics:
+            column = _METRIC_COLUMN_MAP.get(metric_name)
+            if column and column in metrics_df.columns:
+                higher_is_better = metric_name not in {"Turnover", "Slippage"}
+                if metric_name == "MaxDD":
+                    higher_is_better = True
+                elif metric_name == "ES95":
+                    higher_is_better = True
+                return metric_name, column, higher_is_better
+        return None
