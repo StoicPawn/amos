@@ -1,6 +1,7 @@
 """Interactive Brokers market data adapter using :mod:`ib_insync`."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -13,7 +14,6 @@ from typing import Iterable, List
 
 import pandas as pd
 from ib_insync import IB, Stock
-from ib_insync.util import IBError, NotConnectedError
 
 from traderx.utils.config import load_config
 
@@ -214,7 +214,7 @@ class IBKRAdapter:
     def ensure_connected(self) -> None:
         try:
             self.connect()
-        except (ConnectionError, OSError) as exc:  # pragma: no cover - network dependent
+        except (ConnectionError, asyncio.TimeoutError, OSError) as exc:  # pragma: no cover - network dependent
             raise IBKRAdapterError(str(exc), request=None, retryable=True) from exc
 
     # ------------------------------------------------------------------
@@ -284,14 +284,13 @@ class IBKRAdapter:
                 keepUpToDate=False,
                 timeout=self.request_timeout,
             )
-        except NotConnectedError as exc:
+        except (ConnectionError, OSError) as exc:
             raise IBKRAdapterError("IBKR session disconnected", request=req, retryable=True) from exc
-        except IBError as exc:
-            message = self._format_error_message(exc, req)
-            retryable = exc.errorCode in _RETRYABLE_ERROR_CODES
-            raise IBKRAdapterError(message, code=exc.errorCode, request=req, retryable=retryable) from exc
+        except asyncio.TimeoutError as exc:
+            raise IBKRAdapterError("IBKR historical data request timed out", request=req, retryable=True) from exc
         except Exception as exc:  # pragma: no cover - defensive
-            raise IBKRAdapterError(str(exc), request=req, retryable=False) from exc
+            message, code, retryable = self._interpret_ib_exception(exc, req)
+            raise IBKRAdapterError(message, code=code, request=req, retryable=retryable) from exc
 
         frame = self._bars_to_frame(bars, req.symbol)
         return frame
@@ -330,15 +329,30 @@ class IBKRAdapter:
         frame = frame[_DEFAULT_COLUMNS]
         return frame
 
-    def _format_error_message(self, error: IBError, req: HistoricalDataRequest) -> str:
-        prefix = f"IBKR error {error.errorCode} while fetching {req.symbol}"
-        if error.errorCode in _RETRYABLE_ERROR_CODES:
-            return f"{prefix}: pacing/data farm violation ({error.errorMsg})"
-        if error.errorCode in _CONTRACT_ERROR_CODES:
-            return f"{prefix}: contract not found ({error.errorMsg})"
-        if error.errorCode == 354:
-            return f"{prefix}: no data returned ({error.errorMsg})"
-        return f"{prefix}: {error.errorMsg}"
+    def _interpret_ib_exception(
+        self, exc: Exception, req: HistoricalDataRequest
+    ) -> tuple[str, int | None, bool]:
+        error_code = getattr(exc, "errorCode", getattr(exc, "code", None))
+        error_msg = getattr(exc, "errorMsg", str(exc))
+
+        message = self._format_error_message(error_code, error_msg, req)
+        retryable = bool(error_code in _RETRYABLE_ERROR_CODES) if error_code is not None else False
+        return message, error_code, retryable
+
+    def _format_error_message(
+        self, error_code: int | None, error_msg: str, req: HistoricalDataRequest
+    ) -> str:
+        if error_code is None:
+            return f"IBKR error while fetching {req.symbol}: {error_msg}"
+
+        prefix = f"IBKR error {error_code} while fetching {req.symbol}"
+        if error_code in _RETRYABLE_ERROR_CODES:
+            return f"{prefix}: pacing/data farm violation ({error_msg})"
+        if error_code in _CONTRACT_ERROR_CODES:
+            return f"{prefix}: contract not found ({error_msg})"
+        if error_code == 354:
+            return f"{prefix}: no data returned ({error_msg})"
+        return f"{prefix}: {error_msg}"
 
     def _log_request(
         self,
