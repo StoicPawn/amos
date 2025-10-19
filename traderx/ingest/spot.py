@@ -1,13 +1,18 @@
 """Utilities for ad-hoc data analysis and historical downloads."""
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable
 
 import pandas as pd
 
+from traderx.ingest.ibkr_adapter import (
+    HistoricalDataRequest,
+    IBKRAdapter,
+    IBKRAdapterError,
+)
 from traderx.utils.io import AtomicWriter
 
 
@@ -23,48 +28,42 @@ class DownloadRequest:
 
 
 class HistoricalDownloader:
-    """Generate simple OHLCV data for ad-hoc analysis pipelines."""
+    """Download OHLCV market data from IBKR for ad-hoc analysis."""
 
-    def __init__(self, default_market: str = "SMART") -> None:
+    def __init__(self, default_market: str = "SMART", adapter: IBKRAdapter | None = None) -> None:
         self.default_market = default_market
+        self.adapter = adapter or IBKRAdapter()
 
     def download(self, request: DownloadRequest) -> pd.DataFrame:
         now = datetime.now(timezone.utc)
-        start = _normalize_datetime(request.start, now - timedelta(days=30))
         end = _normalize_datetime(request.end, now)
+        start_default = end - timedelta(days=30)
+        start = _normalize_datetime(request.start, start_default)
         if end <= start:
             raise ValueError("end must be after start")
 
-        step, freq = _timeframe_to_step(request.timeframe)
-        periods = int(((end - start).total_seconds() // step.total_seconds()) + 1)
-        index = pd.date_range(start, periods=periods, freq=freq)
-        index = [ts for ts in index if ts <= end]
-
-        base_price = 100.0
-        close = []
-        high = []
-        low = []
-        volume = []
-        for i, ts in enumerate(index):
-            drift = 0.05 * i
-            seasonal = 2.0 * __import__("math").sin(i / 5)
-            price = base_price + drift + seasonal
-            close.append(price)
-            high.append(price * 1.002)
-            low.append(price * 0.998)
-            volume.append(1_000_000 + i * 10)
-
-        frame = pd.DataFrame(
-            {
-                "symbol": [request.symbol] * len(index),
-                "market": [request.market or self.default_market] * len(index),
-                "close": close,
-                "high": high,
-                "low": low,
-                "volume": volume,
-            },
-            index=index,
+        bar_size = _normalize_bar_size(request.timeframe)
+        duration = _duration_from_range(start, end)
+        primary_exchange = _normalize_primary_exchange(request.market)
+        hist_request = HistoricalDataRequest(
+            symbol=request.symbol,
+            duration=duration,
+            bar_size=bar_size,
+            what_to_show="TRADES",
+            use_rth=True,
+            end_datetime=end,
+            exchange=request.market or self.default_market,
+            primary_exchange=primary_exchange,
         )
+
+        try:
+            frame = self.adapter.fetch([hist_request])
+        except IBKRAdapterError as exc:
+            raise RuntimeError(f"IBKR download failed: {exc}") from exc
+
+        if frame.empty:
+            return frame
+        frame["market"] = request.market or self.default_market
         return frame
 
     def download_to_csv(self, request: DownloadRequest, destination: Path | str, frame: pd.DataFrame | None = None) -> Path:
@@ -91,20 +90,65 @@ def _normalize_datetime(value: datetime | str | None, default: datetime) -> date
     return parsed
 
 
-def _timeframe_to_step(timeframe: str) -> tuple[timedelta, str]:
-    cleaned = timeframe.strip().lower()
+def _normalize_bar_size(timeframe: str) -> str:
+    cleaned = timeframe.strip().lower().replace("-", " ")
+    if not cleaned:
+        return "1 day"
     if cleaned.endswith("min"):
-        value = int(cleaned.split()[0]) if " " in cleaned else int(cleaned.rstrip("min"))
-        return timedelta(minutes=max(value, 1)), "1min"
+        value = cleaned.replace("min", "").strip()
+        value = int(value) if value else 1
+        value = max(value, 1)
+        return "1 min" if value == 1 else f"{value} mins"
     if cleaned.endswith("m") and cleaned[:-1].isdigit():
-        return timedelta(minutes=max(int(cleaned[:-1]), 1)), "1min"
-    if cleaned.endswith("hour") or cleaned.endswith("h"):
+        value = max(int(cleaned[:-1]), 1)
+        return "1 min" if value == 1 else f"{value} mins"
+    if cleaned.endswith("hour"):
         digits = "".join(ch for ch in cleaned if ch.isdigit())
-        value = int(digits) if digits else 1
-        return timedelta(hours=max(value, 1)), "1h"
-    digits = "".join(ch for ch in cleaned if ch.isdigit())
-    value = int(digits) if digits else 1
-    return timedelta(days=max(value, 1)), "1d"
+        value = max(int(digits), 1) if digits else 1
+        return "1 hour" if value == 1 else f"{value} hours"
+    if cleaned.endswith("h") and cleaned[:-1].isdigit():
+        value = max(int(cleaned[:-1]), 1)
+        return "1 hour" if value == 1 else f"{value} hours"
+    if cleaned.endswith("day") or cleaned.endswith("d"):
+        digits = "".join(ch for ch in cleaned if ch.isdigit())
+        value = max(int(digits), 1) if digits else 1
+        return "1 day" if value == 1 else f"{value} days"
+    if cleaned.endswith("week") or cleaned.endswith("w"):
+        digits = "".join(ch for ch in cleaned if ch.isdigit())
+        value = max(int(digits), 1) if digits else 1
+        return "1 week" if value == 1 else f"{value} weeks"
+    if cleaned.endswith("month") or cleaned.endswith("mo"):
+        digits = "".join(ch for ch in cleaned if ch.isdigit())
+        value = max(int(digits), 1) if digits else 1
+        return "1 month" if value == 1 else f"{value} months"
+    return timeframe
+
+
+def _duration_from_range(start: datetime, end: datetime) -> str:
+    delta = end - start
+    seconds = max(int(delta.total_seconds()), 1)
+    if seconds < 86400:
+        return f"{seconds} S"
+    days = seconds / 86400
+    if days < 7:
+        return f"{math.ceil(days)} D"
+    weeks = days / 7
+    if weeks < 4:
+        return f"{math.ceil(weeks)} W"
+    months = days / 30
+    if months < 12:
+        return f"{math.ceil(months)} M"
+    years = days / 365
+    return f"{max(1, math.ceil(years))} Y"
+
+
+def _normalize_primary_exchange(market: str | None) -> str | None:
+    if not market:
+        return None
+    upper = market.upper()
+    if upper in {"NASDAQ", "NYSE"}:
+        return upper
+    return None
 
 
 __all__ = ["DownloadRequest", "HistoricalDownloader"]
